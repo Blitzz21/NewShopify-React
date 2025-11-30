@@ -1,0 +1,19 @@
+{
+  "scripts": {
+    "setup": "concurrently \"npm:setup:composer\" \"npm:setup:frontend\"",
+    "setup:composer": "composer install",
+    "setup:frontend": "cd public && npm install",
+    "tailwind:dev": "tailwindcss -i ./src/input.css -o ./public/index.css --watch",
+    "tailwind:build": "tailwindcss -i ./src/input.css -o ./public/index.css --minify",
+    "dev": "concurrently \"npm:tailwind:dev\" \"php -S 127.0.0.1:8000 -t public\" \"cd public && npm run dev\"",
+    "build:css": "npm run tailwind:build"
+  },
+  "dependencies": {
+    "@tailwindcss/cli": "^4.1.17",
+    "ngrok": "^5.0.0-beta.2",
+    "tailwindcss": "^4.1.17"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
