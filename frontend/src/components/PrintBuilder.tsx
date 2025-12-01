@@ -29,6 +29,8 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, ''
 const apiUrl = (endpoint: string) =>
   `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
 
+console.log('API_BASE_URL =', API_BASE_URL);
+console.log('Products URL =', apiUrl('/api/products'));
 
 export const PrintBuilder: React.FC = () => {
   useEffect(() => {
@@ -42,6 +44,7 @@ export const PrintBuilder: React.FC = () => {
       selectedSize: string | null;
       quantity: number;
       lastVariant: Variant | null;
+      artScale: number; // 1.0 = 100%
     } = {
       products: [],
       artworkFile: null,
@@ -52,6 +55,7 @@ export const PrintBuilder: React.FC = () => {
       selectedSize: null,
       quantity: 1,
       lastVariant: null,
+      artScale: 1,
     };
 
     const el = {
@@ -77,6 +81,8 @@ export const PrintBuilder: React.FC = () => {
       configAddBtn: document.getElementById('config-add-btn') as HTMLButtonElement | null,
       debugVariantId: document.getElementById('debug-variant-id'),
       debugSelection: document.getElementById('debug-selection'),
+      mockupCanvas: document.getElementById('mockup-canvas') as HTMLCanvasElement | null,
+      artScale: document.getElementById('art-scale') as HTMLInputElement | null,
     };
 
     if (
@@ -101,11 +107,193 @@ export const PrintBuilder: React.FC = () => {
       !el.configPrice ||
       !el.configAddBtn ||
       !el.debugVariantId ||
-      !el.debugSelection
+      !el.debugSelection ||
+      !el.mockupCanvas ||
+      !el.artScale
     ) {
       // If any required element is missing, do not bind logic.
       return;
     }
+
+    // ------------------------------
+    // CANVAS BLENDING HELPERS
+    // ------------------------------
+
+    const computeTorsoZone = (
+      width: number,
+      height: number
+    ): { topPct: number; heightPct: number; leftPct: number; widthPct: number } => {
+      // Simple, robust torso zone good for tees/hoodies/sweaters
+      // You can tweak these later after seeing a few products.
+      const leftPct = 0.22;
+      const widthPct = 0.56;
+
+      // Slightly dynamic height based on aspect ratio
+      const aspect = height / width;
+      let topPct = 0.34;
+      let heightPct = 0.36;
+
+      if (aspect > 1.3) {
+        // Longer garments (hoodies, tall shots)
+        topPct = 0.36;
+        heightPct = 0.38;
+      }
+
+      return { topPct, heightPct, leftPct, widthPct };
+    };
+
+    const sampleBrightnessInZone = (
+      ctx: CanvasRenderingContext2D,
+      width: number,
+      height: number,
+      zone: { topPct: number; heightPct: number; leftPct: number; widthPct: number }
+    ): number => {
+      const x0 = Math.floor(width * zone.leftPct);
+      const y0 = Math.floor(height * zone.topPct);
+      const w = Math.floor(width * zone.widthPct);
+      const h = Math.floor(height * zone.heightPct);
+
+      const imgData = ctx.getImageData(x0, y0, w, h);
+      const data = imgData.data;
+      let sum = 0;
+      let count = 0;
+
+      const step = 4 * 10; // sample every ~10 pixels horizontally
+
+      for (let i = 0; i < data.length; i += step) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const brightness = (r + g + b) / 3;
+        sum += brightness;
+        count++;
+      }
+
+      return count ? sum / count : 160;
+    };
+
+    const renderMockup = () => {
+      if (
+        !state.selectedProduct ||
+        !state.selectedProduct.image ||
+        !state.artworkPreviewUrl ||
+        !el.mockupCanvas
+      ) {
+        return;
+      }
+
+      const canvas = el.mockupCanvas;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const garmentImg = new Image();
+      garmentImg.crossOrigin = 'anonymous';
+      garmentImg.src = state.selectedProduct.image;
+
+      const artImg = new Image();
+      artImg.crossOrigin = 'anonymous';
+      artImg.src = state.artworkPreviewUrl;
+
+      let garmentLoaded = false;
+      let artLoaded = false;
+
+      const tryRender = () => {
+        if (!garmentLoaded || !artLoaded) return;
+
+        const gw = garmentImg.naturalWidth || garmentImg.width;
+        const gh = garmentImg.naturalHeight || garmentImg.height;
+
+        if (!gw || !gh) return;
+
+        // Match canvas to garment intrinsic size for best quality
+        canvas.width = gw;
+        canvas.height = gh;
+
+        // Draw garment background
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+        ctx.drawImage(garmentImg, 0, 0, canvas.width, canvas.height);
+
+        // Compute torso print zone
+        const zone = computeTorsoZone(canvas.width, canvas.height);
+
+        // Determine base art size (auto-scale)
+        const zoneW = canvas.width * zone.widthPct;
+        const zoneH = canvas.height * zone.heightPct;
+
+        const artAspect = artImg.naturalHeight / artImg.naturalWidth || 1;
+        const baseArtWidth = zoneW * 0.8; // base 80% of zone width
+        let artWidth = baseArtWidth * state.artScale; // apply user scale
+        let artHeight = artWidth * artAspect;
+
+        // Clamp to zone height if it overflows
+        if (artHeight > zoneH * 0.9) {
+          const scaleDown = (zoneH * 0.9) / artHeight;
+          artHeight *= scaleDown;
+          artWidth *= scaleDown;
+        }
+
+        // Center artwork in the zone
+        const artX = canvas.width * zone.leftPct + (zoneW - artWidth) / 2;
+        const artY = canvas.height * zone.topPct + (zoneH - artHeight) / 2;
+
+        // Measure brightness inside torso region for blend mode
+        const avgBrightness = sampleBrightnessInZone(ctx, canvas.width, canvas.height, zone);
+
+        // Draw artwork with different blending based on garment tone
+        if (avgBrightness >= 190) {
+          // Very light shirts (white/cream)
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = 0.95;
+          ctx.drawImage(artImg, artX, artY, artWidth, artHeight);
+
+          ctx.globalCompositeOperation = 'soft-light';
+          ctx.globalAlpha = 0.35;
+          ctx.drawImage(artImg, artX, artY, artWidth, artHeight);
+        } else if (avgBrightness >= 120) {
+          // Mid-tone shirts
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = 0.85;
+          ctx.drawImage(artImg, artX, artY, artWidth, artHeight);
+
+          ctx.globalCompositeOperation = 'soft-light';
+          ctx.globalAlpha = 0.4;
+          ctx.drawImage(artImg, artX, artY, artWidth, artHeight);
+        } else {
+          // Dark shirts
+          ctx.globalCompositeOperation = 'screen';
+          ctx.globalAlpha = 0.9;
+          ctx.drawImage(artImg, artX, artY, artWidth, artHeight);
+
+          ctx.globalCompositeOperation = 'soft-light';
+          ctx.globalAlpha = 0.35;
+          ctx.drawImage(artImg, artX, artY, artWidth, artHeight);
+        }
+
+        // Re-apply garment texture (wrinkles/shadows) on top to blend
+        ctx.globalCompositeOperation = 'soft-light';
+        ctx.globalAlpha = 0.45;
+        ctx.drawImage(garmentImg, 0, 0, canvas.width, canvas.height);
+
+        // Reset state
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+      };
+
+      garmentImg.onload = () => {
+        garmentLoaded = true;
+        tryRender();
+      };
+      artImg.onload = () => {
+        artLoaded = true;
+        tryRender();
+      };
+    };
+
+    // ------------------------------
+    // EVENTS / LOGIC
+    // ------------------------------
 
     const handleArtworkChange = async (event: Event) => {
       const target = event.target as HTMLInputElement | null;
@@ -132,8 +320,8 @@ export const PrintBuilder: React.FC = () => {
       el.step2Circle.classList.add('bg-emerald-600', 'text-white');
 
       if (state.selectedProduct) {
-        el.configArtOverlay.src = state.artworkPreviewUrl;
-        el.configArtOverlay.classList.remove('hidden');
+        // trigger canvas re-render
+        setTimeout(renderMockup, 50);
       }
 
       try {
@@ -207,8 +395,12 @@ export const PrintBuilder: React.FC = () => {
 
       state.selectedProduct = product;
 
-      const colors = Array.from(new Set(product.variants.map((v) => v.color).filter(Boolean))) as string[];
-      const sizes = Array.from(new Set(product.variants.map((v) => v.size).filter(Boolean))) as string[];
+      const colors = Array.from(
+        new Set(product.variants.map((v) => v.color).filter(Boolean))
+      ) as string[];
+      const sizes = Array.from(
+        new Set(product.variants.map((v) => v.size).filter(Boolean))
+      ) as string[];
 
       if (!sameProduct || !state.selectedColor || !colors.includes(state.selectedColor)) {
         state.selectedColor = colors[0] || null;
@@ -227,10 +419,8 @@ export const PrintBuilder: React.FC = () => {
       el.configProductDescription.textContent = product.description || '';
 
       if (state.artworkPreviewUrl) {
-        el.configArtOverlay.src = state.artworkPreviewUrl;
-        el.configArtOverlay.classList.remove('hidden');
-      } else {
-        el.configArtOverlay.classList.add('hidden');
+        // re-render canvas with new garment + artwork
+        setTimeout(renderMockup, 50);
       }
 
       el.configColors.innerHTML = '';
@@ -255,6 +445,7 @@ export const PrintBuilder: React.FC = () => {
             state.selectedColor = color;
             selectProduct(productId);
             updateVariantAndPrice();
+            renderMockup();
           });
 
           el.configColors.appendChild(btn);
@@ -349,13 +540,30 @@ export const PrintBuilder: React.FC = () => {
       updateVariantAndPrice();
     };
 
+    const handleArtScaleInput = () => {
+      const raw = Number(el.artScale.value || '100');
+      const clamped = Math.min(140, Math.max(60, raw)); // 60–140%
+      state.artScale = clamped / 100;
+      el.artScale.value = String(clamped);
+      renderMockup();
+    };
+
     const handleAddClick = async () => {
       if (!state.selectedProduct || !state.lastVariant) {
         alert('Please select a valid color/size combination.');
         return;
       }
 
-      const payload = {
+      if (
+        !state.artworkUpload ||
+        !state.artworkUpload.storedFileName ||
+        !state.artworkUpload.url
+      ) {
+        alert('Please upload your artwork and wait for the upload to complete before creating a cart.');
+        return;
+      }
+
+      const cartPayload = {
         variantId: state.lastVariant.id,
         quantity: state.quantity,
         custom: {
@@ -364,8 +572,8 @@ export const PrintBuilder: React.FC = () => {
           color: state.selectedColor,
           size: state.selectedSize,
           artworkFileName: state.artworkFile ? state.artworkFile.name : null,
-          artworkStoredFileName: state.artworkUpload ? state.artworkUpload.storedFileName : null,
-          artworkUrl: state.artworkUpload ? state.artworkUpload.url : null,
+          artworkStoredFileName: state.artworkUpload.storedFileName,
+          artworkUrl: state.artworkUpload.url,
         },
       };
 
@@ -378,23 +586,50 @@ export const PrintBuilder: React.FC = () => {
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(cartPayload),
         });
 
-        const data = (await res.json()) as { checkoutUrl?: string };
+        let data: { cartId?: string; checkoutUrl?: string };
+        try {
+          data = (await res.json()) as { cartId?: string; checkoutUrl?: string };
+        } catch (e) {
+          console.error('Failed to parse cart JSON:', e);
+          alert('Cart created but response was invalid. Please try again.');
+          return;
+        }
 
-        if (!res.ok) {
+        if (!res.ok || !data.checkoutUrl || !data.cartId) {
           console.error('Cart error:', data);
           alert('Failed to create cart. Check console for details.');
           return;
         }
 
-        if (data.checkoutUrl) {
-          window.location.href = data.checkoutUrl;
-        } else {
-          console.error('No checkoutUrl in response:', data);
-          alert('Cart created but no checkout URL returned.');
+        // Log design (non-blocking)
+        try {
+          const designPayload = {
+            productId: state.selectedProduct.id,
+            variantId: state.lastVariant.id,
+            color: state.selectedColor,
+            size: state.selectedSize,
+            quantity: state.quantity,
+            artworkFile: state.artworkUpload.storedFileName,
+            artworkUrl: state.artworkUpload.url,
+            cartId: data.cartId,
+            checkoutUrl: data.checkoutUrl,
+            status: 'pending',
+          };
+
+          await fetch(apiUrl('/api/designs'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(designPayload),
+          });
+        } catch (e) {
+          console.error('Failed to log design:', e);
         }
+
+        // Redirect to Shopify
+        window.location.href = data.checkoutUrl;
       } catch (err) {
         console.error(err);
         alert('Something went wrong while creating the cart.');
@@ -404,10 +639,12 @@ export const PrintBuilder: React.FC = () => {
       }
     };
 
+    // Bind listeners
     el.artInput.addEventListener('change', handleArtworkChange as EventListener);
     el.configSize.addEventListener('change', updateVariantAndPrice);
     el.configQty.addEventListener('input', handleQtyInput);
     el.configAddBtn.addEventListener('click', handleAddClick);
+    el.artScale.addEventListener('input', handleArtScaleInput);
 
     loadProducts();
 
@@ -416,6 +653,7 @@ export const PrintBuilder: React.FC = () => {
       el.configSize.removeEventListener('change', updateVariantAndPrice);
       el.configQty.removeEventListener('input', handleQtyInput);
       el.configAddBtn.removeEventListener('click', handleAddClick);
+      el.artScale.removeEventListener('input', handleArtScaleInput);
       if (state.artworkPreviewUrl) {
         URL.revokeObjectURL(state.artworkPreviewUrl);
       }
@@ -476,7 +714,8 @@ export const PrintBuilder: React.FC = () => {
                 Step 1 - Upload your artwork
               </h2>
               <p className="text-xs text-slate-500 mb-4">
-                Supported formats: PNG, JPG, SVG, PDF. Max 25MB. We will use this artwork in the live garment preview.
+                Supported formats: PNG, JPG, SVG, PDF. Max 25MB. We will use this artwork in the live garment
+                preview.
               </p>
 
               <div
@@ -550,7 +789,10 @@ export const PrintBuilder: React.FC = () => {
                 <p id="products-status" className="text-xs text-slate-500"></p>
               </div>
 
-              <div id="config-panel" className="flex-1 rounded-xl border border-slate-200 bg-slate-50/80 p-4 flex flex-col gap-3">
+              <div
+                id="config-panel"
+                className="flex-1 rounded-xl border border-slate-200 bg-slate-50/80 p-4 flex flex-col gap-3"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <div>
                     <p className="text-xs font-semibold text-slate-800">Configuration</p>
@@ -572,16 +814,40 @@ export const PrintBuilder: React.FC = () => {
                     <div className="flex-1 flex flex-col gap-2">
                       <p className="text-[11px] font-medium text-slate-600">Live preview</p>
                       <div className="relative w-full max-w-xs aspect-4/5 bg-white rounded-lg border border-slate-200 flex items-center justify-center overflow-hidden">
+                        <canvas
+                          id="mockup-canvas"
+                          className="w-full h-full"
+                        />
+                        {/* Hidden fallback images (not used by canvas, but kept for compatibility) */}
                         <img
                           id="config-product-image"
                           alt="Product mockup"
-                          className="max-h-full max-w-full object-contain"
+                          className="hidden max-h-full max-w-full object-contain"
                         />
                         <img
                           id="config-art-overlay"
                           alt="Artwork overlay"
-                          className="pointer-events-none absolute max-h-[35%] max-w-[60%] object-contain opacity-90"
-                          style={{ top: '40%' }}
+                          className="hidden pointer-events-none absolute object-contain"
+                        />
+                      </div>
+                      <div className="mt-3 space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-medium text-slate-600">
+                            Print size
+                          </span>
+                          <span className="text-[11px] text-slate-400">
+                            Smaller
+                            <span className="mx-1">·</span>
+                            Larger
+                          </span>
+                        </div>
+                        <input
+                          id="art-scale"
+                          type="range"
+                          min={60}
+                          max={140}
+                          defaultValue={100}
+                          className="w-full accent-slate-900"
                         />
                       </div>
                     </div>
@@ -594,8 +860,7 @@ export const PrintBuilder: React.FC = () => {
 
                       <div>
                         <p className="text-[11px] font-medium text-slate-600 mb-1">Color</p>
-                        <div id="config-colors" className="flex flex-wrap gap-1.5">
-                        </div>
+                        <div id="config-colors" className="flex flex-wrap gap-1.5"></div>
                       </div>
 
                       <div className="grid grid-cols-[1.4fr_1fr] gap-2 items-end">
@@ -611,7 +876,7 @@ export const PrintBuilder: React.FC = () => {
                           <input
                             id="config-qty"
                             type="number"
-                            min="1"
+                            min={1}
                             defaultValue={1}
                             className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
                           />
@@ -648,8 +913,13 @@ export const PrintBuilder: React.FC = () => {
                         Show debug info (dev only)
                       </summary>
                       <div className="mt-1 rounded border border-dashed border-slate-200 bg-slate-50 p-2 space-y-1">
-                        <p><strong>Variant ID:</strong> <span id="debug-variant-id">None</span></p>
-                        <p><strong>Color / Size / Qty:</strong> <span id="debug-selection">...</span></p>
+                        <p>
+                          <strong>Variant ID:</strong> <span id="debug-variant-id">None</span>
+                        </p>
+                        <p>
+                          <strong>Color / Size / Qty:</strong>{' '}
+                          <span id="debug-selection">...</span>
+                        </p>
                       </div>
                     </details>
                   </div>

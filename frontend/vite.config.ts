@@ -13,12 +13,12 @@ export default defineConfig(({ mode }) => {
           'localhost',
           'botfly-dischargeable-caiden.ngrok-free.dev',
         ],
-        proxy: {
-          '/api.php': {
-            target: 'http://127.0.0.1:8000',
-            changeOrigin: true,
+          proxy: {
+            '/api.php': {
+              target: 'http://localhost:8000',
+              changeOrigin: true,
+            },
           },
-        },
       },
       plugins: [react()],
       define: {
