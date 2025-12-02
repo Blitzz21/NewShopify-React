@@ -22,6 +22,28 @@ class ProductsController
         $limit = max(1, min(50, $limit)); // keep requests lightweight per Shopify guidance
         $cursor = $_GET['cursor'] ?? null;
         $search = $_GET['query'] ?? null;
+        if ($search !== null) {
+            $search = trim($search);
+            if ($search === '') {
+                $search = null;
+            } else {
+                // Shopify's search syntax is flexible but they recommend guarding user input to avoid
+                // wasteful queries (see https://shopify.dev/docs/api/usage/search-syntax). Keep queries short
+                // and restrict characters to prevent malformed expressions.
+                if (strlen($search) > 120) {
+                    Response::json([
+                        'error'   => 'invalid_query',
+                        'message' => 'Search text is too long.',
+                    ], 422);
+                }
+                if (!preg_match('/^[\\w\\s:\\-\'"]+$/u', $search)) {
+                    Response::json([
+                        'error'   => 'invalid_query',
+                        'message' => 'Search text contains unsupported characters.',
+                    ], 422);
+                }
+            }
+        }
 
         $query = <<<'GRAPHQL'
         query GetProducts($first: Int!, $after: String, $query: String) {
