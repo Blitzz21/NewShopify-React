@@ -30,6 +30,14 @@ type UploadResult = {
   url?: string;
 };
 
+type ProductsResponse = {
+  products?: Product[];
+  pageInfo?: PageInfo | null;
+  error?: string;
+  message?: string;
+  details?: string;
+};
+
 // If VITE_API_BASE_URL is set (for production), use it; otherwise use same-origin
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
@@ -567,10 +575,15 @@ export const PrintBuilder: React.FC = () => {
         }
 
         const res = await fetch(apiUrl(`/api/products?${params.toString()}`));
-        const data = (await res.json()) as {
-          products?: Product[];
-          pageInfo?: PageInfo;
-        };
+        const data = (await res.json()) as ProductsResponse;
+
+        if (!res.ok || data.error) {
+          // backend returns structured errors when Shopify is unavailable.
+          const msg =
+            data.message ||
+            'Shopify returned an error while loading products.';
+          throw new Error(`${data.error || 'error'}: ${msg}`);
+        }
 
         const fetched = data.products ?? [];
         state.products = append ? [...state.products, ...fetched] : fetched;
@@ -586,10 +599,14 @@ export const PrintBuilder: React.FC = () => {
         updateLoadMoreVisibility();
       } catch (err) {
         console.error(err);
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Failed to load products.';
         if (append) {
           el.productsLoadMore.textContent = 'Load more garments';
         }
-        el.productsStatus.textContent = 'Failed to load products.';
+        el.productsStatus.textContent = message;
         el.productsLoadMore.classList.add('hidden');
       } finally {
         if (append) {

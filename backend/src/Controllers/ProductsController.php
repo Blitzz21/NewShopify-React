@@ -66,7 +66,17 @@ class ProductsController
             'query' => $search ?: null,
         ];
 
-        $data     = $this->shopify->query($query, $variables);
+        try {
+            // Bubble up raw Shopify errors so the client can provide actionable feedback.
+            $data = $this->shopify->query($query, $variables);
+        } catch (\Throwable $e) {
+            Response::json([
+                'error'   => 'shopify_query_failed',
+                'message' => 'Unable to load products from Shopify.',
+                'details' => $e->getMessage(),
+            ], 502);
+        }
+
         $products = $data['products']['nodes'] ?? [];
         $pageInfo = $data['products']['pageInfo'] ?? null;
 
