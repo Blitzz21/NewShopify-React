@@ -17,9 +17,21 @@ class ProductsController
 
     public function index(): void
     {
+        // Allow callers to request additional pages/search results using Shopify's cursor pattern.
+        $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 20;
+        $limit = max(1, min(50, $limit)); // keep requests lightweight per Shopify guidance
+        $cursor = $_GET['cursor'] ?? null;
+        $search = $_GET['query'] ?? null;
+
         $query = <<<'GRAPHQL'
-        query GetProducts {
-          products(first: 20) {
+        query GetProducts($first: Int!, $after: String, $query: String) {
+          products(first: $first, after: $after, query: $query) {
+            pageInfo {
+              hasNextPage
+              hasPreviousPage
+              startCursor
+              endCursor
+            }
             nodes {
               id
               title
@@ -47,8 +59,16 @@ class ProductsController
         }
         GRAPHQL;
 
-        $data     = $this->shopify->query($query);
+        // Using variables keeps the query reusable and lets Shopify handle pagination via cursors.
+        $variables = [
+            'first' => $limit,
+            'after' => $cursor ?: null,
+            'query' => $search ?: null,
+        ];
+
+        $data     = $this->shopify->query($query, $variables);
         $products = $data['products']['nodes'] ?? [];
+        $pageInfo = $data['products']['pageInfo'] ?? null;
 
         $result = array_map(function ($p) {
             return [
@@ -81,6 +101,11 @@ class ProductsController
             ];
         }, $products);
 
-        Response::json(['products' => $result]);
+        // Frontend consumes normalized products plus pageInfo to know when to fetch more.
+        Response::json([
+            'products' => $result,
+            'pageInfo' => $pageInfo,
+            'limit'    => $limit,
+        ]);
     }
 }
