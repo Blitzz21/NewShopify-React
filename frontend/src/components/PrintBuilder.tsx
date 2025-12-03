@@ -52,6 +52,7 @@ export const PrintBuilder: React.FC = () => {
     };
     const DARK_COLOR_KEYWORDS = ['black', 'charcoal', 'navy', 'midnight', 'graphite', 'forest', 'dark'];
     const LIGHT_COLOR_KEYWORDS = ['white', 'natural', 'cream', 'ivory', 'light', 'ash', 'sand'];
+    const CONFIG_DESCRIPTION_LIMIT = 160;
 
     const state: {
       products: Product[];
@@ -68,6 +69,7 @@ export const PrintBuilder: React.FC = () => {
       artworkTransform: typeof DEFAULT_ARTWORK_TRANSFORM;
       artworkBlendMode: 'light' | 'dark';
       artworkBlendManual: boolean;
+      configDescriptionExpanded: boolean;
     } = {
       products: [],
       artworkFile: null,
@@ -83,6 +85,7 @@ export const PrintBuilder: React.FC = () => {
       artworkTransform: { ...DEFAULT_ARTWORK_TRANSFORM },
       artworkBlendMode: 'light',
       artworkBlendManual: false,
+      configDescriptionExpanded: false,
     };
 
     const el = {
@@ -117,6 +120,9 @@ export const PrintBuilder: React.FC = () => {
       configArtBlendDark: document.getElementById('config-art-blend-dark') as HTMLButtonElement | null,
       configArtBlendAuto: document.getElementById('config-art-blend-auto') as HTMLButtonElement | null,
       configArtBlendStatus: document.getElementById('config-art-blend-status'),
+      configProductDescriptionToggle: document.getElementById(
+        'config-product-description-toggle',
+      ) as HTMLButtonElement | null,
       debugVariantId: document.getElementById('debug-variant-id'),
       debugSelection: document.getElementById('debug-selection'),
     };
@@ -152,6 +158,7 @@ export const PrintBuilder: React.FC = () => {
       !el.configArtBlendDark ||
       !el.configArtBlendAuto ||
       !el.configArtBlendStatus ||
+      !el.configProductDescriptionToggle ||
       !el.debugVariantId ||
       !el.debugSelection
     ) {
@@ -402,7 +409,8 @@ export const PrintBuilder: React.FC = () => {
       // Default product image (will be refined by variant in updateVariantAndPrice)
       el.configProductImage.src = product.image || '';
       el.configProductTitle.textContent = product.title;
-      el.configProductDescription.textContent = product.description || '';
+      state.configDescriptionExpanded = false;
+      renderConfigDescription(product.description);
 
       if (state.artworkPreviewUrl) {
         el.configArtOverlay.src = state.artworkPreviewUrl;
@@ -541,6 +549,25 @@ export const PrintBuilder: React.FC = () => {
         el.products.appendChild(card);
       });
     };
+
+    const renderConfigDescription = (description: string | null | undefined) => {
+      if (!el.configProductDescription || !el.configProductDescriptionToggle) return;
+      const text = description || '';
+      const needsTruncate = text.length > CONFIG_DESCRIPTION_LIMIT;
+      const displayText =
+        needsTruncate && !state.configDescriptionExpanded
+          ? `${text.slice(0, CONFIG_DESCRIPTION_LIMIT).trim()}…`
+          : text;
+
+      el.configProductDescription.textContent = displayText;
+      el.configProductDescriptionToggle.classList.toggle('hidden', !needsTruncate);
+      el.configProductDescriptionToggle.textContent = state.configDescriptionExpanded
+        ? 'Show less'
+        : 'Read more';
+      el.configProductDescriptionToggle.setAttribute('aria-expanded', String(state.configDescriptionExpanded));
+    };
+
+    renderConfigDescription('');
 
     const updateLoadMoreButton = () => {
       if (!el.productsLoadMore) return;
@@ -752,6 +779,12 @@ export const PrintBuilder: React.FC = () => {
       updateArtworkControls();
     };
 
+    const handleConfigDescriptionToggle = () => {
+      if (!state.selectedProduct) return;
+      state.configDescriptionExpanded = !state.configDescriptionExpanded;
+      renderConfigDescription(state.selectedProduct.description);
+    };
+
     const handleBlendLightClick = () => {
       state.artworkBlendMode = 'light';
       state.artworkBlendManual = true;
@@ -806,6 +839,7 @@ export const PrintBuilder: React.FC = () => {
     el.configArtSize.addEventListener('input', handleArtSizeChange);
     el.configArtInvert.addEventListener('click', handleArtInvertClick);
     el.configArtReset.addEventListener('click', handleArtResetClick);
+    el.configProductDescriptionToggle.addEventListener('click', handleConfigDescriptionToggle);
     el.configArtBlendLight.addEventListener('click', handleBlendLightClick);
     el.configArtBlendDark.addEventListener('click', handleBlendDarkClick);
     el.configArtBlendAuto.addEventListener('click', handleBlendAutoClick);
@@ -825,6 +859,7 @@ export const PrintBuilder: React.FC = () => {
       el.configArtSize.removeEventListener('input', handleArtSizeChange);
       el.configArtInvert.removeEventListener('click', handleArtInvertClick);
       el.configArtReset.removeEventListener('click', handleArtResetClick);
+      el.configProductDescriptionToggle.removeEventListener('click', handleConfigDescriptionToggle);
       el.configArtBlendLight.removeEventListener('click', handleBlendLightClick);
       el.configArtBlendDark.removeEventListener('click', handleBlendDarkClick);
       el.configArtBlendAuto.removeEventListener('click', handleBlendAutoClick);
@@ -1092,6 +1127,13 @@ export const PrintBuilder: React.FC = () => {
                       <div>
                         <p className="text-sm font-semibold text-slate-900" id="config-product-title"></p>
                         <p className="text-[11px] text-slate-500 mt-1" id="config-product-description"></p>
+                        <button
+                          type="button"
+                          id="config-product-description-toggle"
+                          className="mt-1 hidden text-[10px] text-slate-600 underline"
+                        >
+                          Read more
+                        </button>
                       </div>
 
                       <div>
